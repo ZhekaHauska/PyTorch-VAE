@@ -9,19 +9,28 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.datasets import CelebA
 import zipfile
+import numpy as np
 
 
 # Add your custom dataset class here
-class MyDataset(Dataset):
-    def __init__(self):
-        pass
-    
-    
+class AnimalAI(Dataset):
+    def __init__(self,
+                 data,
+                 transform: Callable,
+                 **kwargs):
+        self.transforms = transform
+        self.data = data
+
     def __len__(self):
-        pass
-    
+        return len(self.data)
+
     def __getitem__(self, idx):
-        pass
+        img = self.data[idx].astype(np.float32)
+
+        if self.transforms is not None:
+            img = self.transforms(img)
+
+        return img, 0.0
 
 
 class MyCelebA(CelebA):
@@ -34,7 +43,6 @@ class MyCelebA(CelebA):
     
     def _check_integrity(self) -> bool:
         return True
-    
     
 
 class OxfordPets(Dataset):
@@ -62,6 +70,7 @@ class OxfordPets(Dataset):
             img = self.transforms(img)
         
         return img, 0.0 # dummy datat to prevent breaking 
+
 
 class VAEDataset(LightningDataModule):
     """
@@ -98,60 +107,29 @@ class VAEDataset(LightningDataModule):
         self.pin_memory = pin_memory
 
     def setup(self, stage: Optional[str] = None) -> None:
-#       =========================  OxfordPets Dataset  =========================
-            
-#         train_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
-#                                               transforms.CenterCrop(self.patch_size),
-# #                                               transforms.Resize(self.patch_size),
-#                                               transforms.ToTensor(),
-#                                                 transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+        train_transforms = transforms.Compose([transforms.ToTensor()])
         
-#         val_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
-#                                             transforms.CenterCrop(self.patch_size),
-# #                                             transforms.Resize(self.patch_size),
-#                                             transforms.ToTensor(),
-#                                               transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+        val_transforms = transforms.Compose([transforms.ToTensor()])
 
-#         self.train_dataset = OxfordPets(
-#             self.data_dir,
-#             split='train',
-#             transform=train_transforms,
-#         )
-        
-#         self.val_dataset = OxfordPets(
-#             self.data_dir,
-#             split='val',
-#             transform=val_transforms,
-#         )
-        
-#       =========================  CelebA Dataset  =========================
-    
-        train_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
-                                              transforms.CenterCrop(148),
-                                              transforms.Resize(self.patch_size),
-                                              transforms.ToTensor(),])
-        
-        val_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
-                                            transforms.CenterCrop(148),
-                                            transforms.Resize(self.patch_size),
-                                            transforms.ToTensor(),])
-        
-        self.train_dataset = MyCelebA(
-            self.data_dir,
-            split='train',
+        data_dir = Path(self.data_dir)
+        data = [np.load(f) for f in data_dir.iterdir() if f.suffix == '.npy']
+        data = np.concatenate(data)
+
+        split_indexes = np.arange(len(data))
+        np.random.shuffle(split_indexes)
+
+        self.train_dataset = AnimalAI(
+            data[split_indexes[:int(len(split_indexes) * 0.75)]],
             transform=train_transforms,
             download=False,
         )
         
-        # Replace CelebA with your dataset
-        self.val_dataset = MyCelebA(
-            self.data_dir,
-            split='test',
+        self.val_dataset = AnimalAI(
+            data[split_indexes[int(len(split_indexes) * 0.75):]],
             transform=val_transforms,
             download=False,
         )
-#       ===============================================================
-        
+
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
             self.train_dataset,
