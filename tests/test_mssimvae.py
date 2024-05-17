@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import MSSIMVAE
+from torchvae import MSSIMVAE
 from torchsummary import summary
 
 

@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import DIPVAE
+from torchvae import DIPVAE
 from torchsummary import summary
 
 

@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import VanillaVAE
+from torchvae import VanillaVAE
 from torchsummary import summary
 
 

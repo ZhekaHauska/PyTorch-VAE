@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import WAE_MMD
+from torchvae import WAE_MMD
 from torchsummary import summary
 
 

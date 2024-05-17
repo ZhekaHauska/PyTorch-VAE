@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import VQVAE
+from torchvae import VQVAE
 from torchsummary import summary
 
 

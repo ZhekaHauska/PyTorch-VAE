@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import LogCoshVAE
+from torchvae import LogCoshVAE
 from torchsummary import summary
 
 

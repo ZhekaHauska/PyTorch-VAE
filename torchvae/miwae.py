@@ -1,29 +1,25 @@
 import torch
-from models import BaseVAE
+from torchvae import BaseVAE
 from torch import nn
 from torch.nn import functional as F
-from torch import distributions as dist
 from .types_ import *
+from torch.distributions import Normal
 
 
-class SWAE(BaseVAE):
+class MIWAE(BaseVAE):
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
                  hidden_dims: List = None,
-                 reg_weight: int = 100,
-                 wasserstein_deg: float= 2.,
-                 num_projections: int = 50,
-                 projection_dist: str = 'normal',
-                    **kwargs) -> None:
-        super(SWAE, self).__init__()
+                 num_samples: int = 5,
+                 num_estimates: int = 5,
+                 **kwargs) -> None:
+        super(MIWAE, self).__init__()
 
         self.latent_dim = latent_dim
-        self.reg_weight = reg_weight
-        self.p = wasserstein_deg
-        self.num_projections = num_projections
-        self.proj_dist = projection_dist
+        self.num_samples = num_samples # K
+        self.num_estimates = num_estimates # M
 
         modules = []
         if hidden_dims is None:
@@ -41,7 +37,8 @@ class SWAE(BaseVAE):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_z = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
 
 
         # Build Decoder
@@ -81,7 +78,7 @@ class SWAE(BaseVAE):
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
 
-    def encode(self, input: Tensor) -> Tensor:
+    def encode(self, input: Tensor) -> List[Tensor]:
         """
         Encodes the input by passing through the encoder network
         and returns the latent codes.
@@ -93,90 +90,78 @@ class SWAE(BaseVAE):
 
         # Split the result into mu and var components
         # of the latent Gaussian distribution
-        z = self.fc_z(result)
-        return z
+        mu = self.fc_mu(result)
+        log_var = self.fc_var(result)
+
+        return [mu, log_var]
 
     def decode(self, z: Tensor) -> Tensor:
+        """
+        Maps the given latent codes of S samples
+        onto the image space.
+        :param z: (Tensor) [B x S x D]
+        :return: (Tensor) [B x S x C x H x W]
+        """
+        B, M,S, D = z.size()
+        z = z.contiguous().view(-1, self.latent_dim) #[BMS x D]
         result = self.decoder_input(z)
         result = result.view(-1, 512, 2, 2)
         result = self.decoder(result)
-        result = self.final_layer(result)
+        result = self.final_layer(result) #[BMS x C x H x W ]
+        result = result.view([B, M, S,result.size(-3), result.size(-2), result.size(-1)]) #[B x M x S x C x H x W]
         return result
 
+    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
+        """
+        :param mu: (Tensor) Mean of the latent Gaussian
+        :param logvar: (Tensor) Standard deviation of the latent Gaussian
+        :return:
+        """
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return eps * std + mu
+
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
-        z = self.encode(input)
-        return  [self.decode(z), input, z]
+        mu, log_var = self.encode(input)
+        mu = mu.repeat(self.num_estimates, self.num_samples, 1, 1).permute(2, 0, 1, 3) # [B x M x S x D]
+        log_var = log_var.repeat(self.num_estimates, self.num_samples, 1, 1).permute(2, 0, 1, 3) # [B x M x S x D]
+        z = self.reparameterize(mu, log_var) # [B x M x S x D]
+        eps = (z - mu) / log_var # Prior samples
+        return  [self.decode(z), input, mu, log_var, z, eps]
 
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
-        recons = args[0]
-        input = args[1]
-        z = args[2]
-
-        batch_size = input.size(0)
-        bias_corr = batch_size *  (batch_size - 1)
-        reg_weight = self.reg_weight / bias_corr
-
-        recons_loss_l2 = F.mse_loss(recons, input)
-        recons_loss_l1 = F.l1_loss(recons, input)
-
-        swd_loss = self.compute_swd(z, self.p, reg_weight)
-
-        loss = recons_loss_l2 + recons_loss_l1 + swd_loss
-        return {'loss': loss, 'Reconstruction_Loss':(recons_loss_l2 + recons_loss_l1), 'SWD': swd_loss}
-
-    def get_random_projections(self, latent_dim: int, num_samples: int) -> Tensor:
         """
-        Returns random samples from latent distribution's (Gaussian)
-        unit sphere for projecting the encoded samples and the
-        distribution samples.
-
-        :param latent_dim: (Int) Dimensionality of the latent space (D)
-        :param num_samples: (Int) Number of samples required (S)
-        :return: Random projections from the latent unit sphere
-        """
-        if self.proj_dist == 'normal':
-            rand_samples = torch.randn(num_samples, latent_dim)
-        elif self.proj_dist == 'cauchy':
-            rand_samples = dist.Cauchy(torch.tensor([0.0]),
-                                       torch.tensor([1.0])).sample((num_samples, latent_dim)).squeeze()
-        else:
-            raise ValueError('Unknown projection distribution.')
-
-        rand_proj = rand_samples / rand_samples.norm(dim=1).view(-1,1)
-        return rand_proj # [S x D]
-
-
-    def compute_swd(self,
-                    z: Tensor,
-                    p: float,
-                    reg_weight: float) -> Tensor:
-        """
-        Computes the Sliced Wasserstein Distance (SWD) - which consists of
-        randomly projecting the encoded and prior vectors and computing
-        their Wasserstein distance along those projections.
-
-        :param z: Latent samples # [N  x D]
-        :param p: Value for the p^th Wasserstein distance
-        :param reg_weight:
+        KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
+        :param args:
+        :param kwargs:
         :return:
         """
-        prior_z = torch.randn_like(z) # [N x D]
-        device = z.device
+        recons = args[0]
+        input = args[1]
+        mu = args[2]
+        log_var = args[3]
+        z = args[4]
+        eps = args[5]
 
-        proj_matrix = self.get_random_projections(self.latent_dim,
-                                                  num_samples=self.num_projections).transpose(0,1).to(device)
+        input = input.repeat(self.num_estimates,
+                             self.num_samples, 1, 1, 1, 1).permute(2, 0, 1, 3, 4, 5) #[B x M x S x C x H x W]
 
-        latent_projections = z.matmul(proj_matrix) # [N x S]
-        prior_projections = prior_z.matmul(proj_matrix) # [N x S]
+        kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
 
-        # The Wasserstein distance is computed by sorting the two projections
-        # across the batches and computing their element-wise l2 distance
-        w_dist = torch.sort(latent_projections.t(), dim=1)[0] - \
-                 torch.sort(prior_projections.t(), dim=1)[0]
-        w_dist = w_dist.pow(p)
-        return reg_weight * w_dist.mean()
+        log_p_x_z = ((recons - input) ** 2).flatten(3).mean(-1) # Reconstruction Loss # [B x M x S]
+
+        kld_loss = -0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim=3) # [B x M x S]
+        # Get importance weights
+        log_weight = (log_p_x_z + kld_weight * kld_loss) #.detach().data
+
+        # Rescale the weights (along the sample dim) to lie in [0, 1] and sum to 1
+        weight = F.softmax(log_weight, dim = -1)  # [B x M x S]
+
+        loss = torch.mean(torch.mean(torch.sum(weight * log_weight, dim=-1), dim = -2), dim = 0)
+
+        return {'loss': loss, 'Reconstruction_Loss':log_p_x_z.mean(), 'KLD':-kld_loss.mean()}
 
     def sample(self,
                num_samples:int,
@@ -188,19 +173,20 @@ class SWAE(BaseVAE):
         :param current_device: (Int) Device to run the model
         :return: (Tensor)
         """
-        z = torch.randn(num_samples,
+        z = torch.randn(num_samples, 1, 1,
                         self.latent_dim)
 
         z = z.to(current_device)
 
-        samples = self.decode(z)
+        samples = self.decode(z).squeeze()
         return samples
 
     def generate(self, x: Tensor, **kwargs) -> Tensor:
         """
-        Given an input image x, returns the reconstructed image
+        Given an input image x, returns the reconstructed image.
+        Returns only the first reconstructed sample
         :param x: (Tensor) [B x C x H x W]
         :return: (Tensor) [B x C x H x W]
         """
 
-        return self.forward(x)[0]
+        return self.forward(x)[0][:, 0, 0, :]

@@ -1,22 +1,32 @@
 import torch
-from models import BaseVAE
+from torchvae import BaseVAE
 from torch import nn
 from torch.nn import functional as F
 from .types_ import *
 
 
-class VampVAE(BaseVAE):
+class BetaVAE(BaseVAE):
+
+    num_iter = 0 # Global static variable to keep track of iterations
 
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
                  hidden_dims: List = None,
-                 num_components: int = 50,
+                 beta: int = 4,
+                 gamma:float = 1000.,
+                 max_capacity: int = 25,
+                 Capacity_max_iter: int = 1e5,
+                 loss_type:str = 'B',
                  **kwargs) -> None:
-        super(VampVAE, self).__init__()
+        super(BetaVAE, self).__init__()
 
         self.latent_dim = latent_dim
-        self.num_components = num_components
+        self.beta = beta
+        self.gamma = gamma
+        self.loss_type = loss_type
+        self.C_max = torch.Tensor([max_capacity])
+        self.C_stop_iter = Capacity_max_iter
 
         modules = []
         if hidden_dims is None:
@@ -75,10 +85,6 @@ class VampVAE(BaseVAE):
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
 
-        self.pseudo_input = torch.eye(self.num_components, requires_grad= False)
-        self.embed_pseudo = nn.Sequential(nn.Linear(self.num_components, 12288),
-                                          nn.Hardtanh(0.0, 1.0)) # 3x64x64 = 12288
-
     def encode(self, input: Tensor) -> List[Tensor]:
         """
         Encodes the input by passing through the encoder network
@@ -115,57 +121,35 @@ class VampVAE(BaseVAE):
         eps = torch.randn_like(std)
         return eps * std + mu
 
-    def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
+    def forward(self, input: Tensor, **kwargs) -> Tensor:
         mu, log_var = self.encode(input)
         z = self.reparameterize(mu, log_var)
-        return  [self.decode(z), input, mu, log_var, z]
+        return  [self.decode(z), input, mu, log_var]
 
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
+        self.num_iter += 1
         recons = args[0]
         input = args[1]
         mu = args[2]
         log_var = args[3]
-        z = args[4]
+        kld_weight = kwargs['M_N']  # Account for the minibatch samples from the dataset
 
-        kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
         recons_loss =F.mse_loss(recons, input)
 
-        E_log_q_z = torch.mean(torch.sum(-0.5 * (log_var + (z - mu) ** 2)/ log_var.exp(),
-                                         dim = 1),
-                               dim = 0)
+        kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
 
-        # Original Prior
-        # E_log_p_z = torch.mean(torch.sum(-0.5 * (z ** 2), dim = 1), dim = 0)
+        if self.loss_type == 'H': # https://openreview.net/forum?id=Sy2fzU9gl
+            loss = recons_loss + self.beta * kld_weight * kld_loss
+        elif self.loss_type == 'B': # https://arxiv.org/pdf/1804.03599.pdf
+            self.C_max = self.C_max.to(input.device)
+            C = torch.clamp(self.C_max/self.C_stop_iter * self.num_iter, 0, self.C_max.data[0])
+            loss = recons_loss + self.gamma * kld_weight* (kld_loss - C).abs()
+        else:
+            raise ValueError('Undefined loss type.')
 
-        # Vamp Prior
-        M, C, H, W = input.size()
-        curr_device = input.device
-        self.pseudo_input = self.pseudo_input.cuda(curr_device)
-        x = self.embed_pseudo(self.pseudo_input)
-        x = x.view(-1, C, H, W)
-        prior_mu, prior_log_var = self.encode(x)
-
-        z_expand = z.unsqueeze(1)
-        prior_mu = prior_mu.unsqueeze(0)
-        prior_log_var = prior_log_var.unsqueeze(0)
-
-        E_log_p_z = torch.sum(-0.5 *
-                              (prior_log_var + (z_expand - prior_mu) ** 2)/ prior_log_var.exp(),
-                              dim = 2) - torch.log(torch.tensor(self.num_components).float())
-
-                               # dim = 0)
-        E_log_p_z = torch.logsumexp(E_log_p_z, dim = 1)
-        E_log_p_z = torch.mean(E_log_p_z, dim = 0)
-
-        # KLD = E_q log q - E_q log p
-        kld_loss = -(E_log_p_z - E_log_q_z)
-        # print(E_log_p_z, E_log_q_z)
-
-
-        loss = recons_loss + kld_weight * kld_loss
-        return {'loss': loss, 'Reconstruction_Loss':recons_loss, 'KLD':-kld_loss}
+        return {'loss': loss, 'Reconstruction_Loss':recons_loss, 'KLD':kld_loss}
 
     def sample(self,
                num_samples:int,
@@ -180,7 +164,7 @@ class VampVAE(BaseVAE):
         z = torch.randn(num_samples,
                         self.latent_dim)
 
-        z = z.cuda(current_device)
+        z = z.to(current_device)
 
         samples = self.decode(z)
         return samples

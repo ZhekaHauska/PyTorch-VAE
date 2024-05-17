@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import SWAE
+from torchvae import SWAE
 from torchsummary import summary
 
 

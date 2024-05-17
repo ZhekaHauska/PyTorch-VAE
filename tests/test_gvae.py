@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import GammaVAE
+from torchvae import GammaVAE
 from torchsummary import summary
 
 

@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import MIWAE
+from torchvae import MIWAE
 from torchsummary import summary
 
 

@@ -1,6 +1,6 @@
 import torch
 import unittest
-from models import HVAE
+from torchvae import HVAE
 from torchsummary import summary
 
 
