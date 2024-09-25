@@ -1,15 +1,16 @@
 model_params:
   name: 'CategoricalVAE'
-  in_channels: 1
+  in_channels: 3
   latent_dim: 10
-  categorical_dim: 10
+  categorical_dim: 50
   temperature: 0.5
   anneal_rate: 0.00003
   anneal_interval: 100
   alpha: 1.0
+  beta: 1.0  # reward regularization weight
 
 data_params:
-  data_path: "/home/evgenio/Activity/HTM/htm_rl_tepo/hima_airi/him-agent/hima/experiments/successor_representations/animal_ai_dataset_boost/"
+  data_path: "/home/evgenio/Activity/HTM/htm_rl_tepo/hima_airi/him-agent/hima/experiments/successor_representations/animal_ai_dataset_vae/data1.npz"
   train_batch_size: 64
   val_batch_size:  64
   patch_size: 64

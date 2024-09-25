@@ -19,18 +19,20 @@ class AnimalAI(Dataset):
                  transform: Callable,
                  **kwargs):
         self.transforms = transform
-        self.data = data
+        self.im = data['s']
+        self.rew = data['r']
 
     def __len__(self):
-        return len(self.data)
+        return len(self.im)
 
     def __getitem__(self, idx):
-        img = self.data[idx].astype(np.float32)
+        img = self.im[idx]
+        rew = self.rew[idx]
 
         if self.transforms is not None:
-            img = self.transforms(img)
+            img = self.transforms(img.astype(np.float32))
 
-        return img, 0.0
+        return img, rew.astype(np.float32)
 
 
 class MyCelebA(CelebA):
@@ -112,20 +114,22 @@ class VAEDataset(LightningDataModule):
         val_transforms = transforms.Compose([transforms.ToTensor()])
 
         data_dir = Path(self.data_dir)
-        data = [np.load(f) for f in data_dir.iterdir() if f.suffix == '.npy']
-        data = np.concatenate(data)
+        data = np.load(data_dir)
 
-        split_indexes = np.arange(len(data))
+        split_indexes = np.arange(len(data['s']))
         np.random.shuffle(split_indexes)
 
+        train_data = {name: data[name][split_indexes[:int(len(split_indexes) * 0.75)]] for name in ['s', 'r']}
+        test_data = {name: data[name][split_indexes[int(len(split_indexes) * 0.75):]] for name in ['s', 'r']}
+
         self.train_dataset = AnimalAI(
-            data[split_indexes[:int(len(split_indexes) * 0.75)]],
+            train_data,
             transform=train_transforms,
             download=False,
         )
         
         self.val_dataset = AnimalAI(
-            data[split_indexes[int(len(split_indexes) * 0.75):]],
+            test_data,
             transform=val_transforms,
             download=False,
         )
