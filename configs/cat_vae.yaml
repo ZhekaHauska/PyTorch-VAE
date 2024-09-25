@@ -2,19 +2,18 @@ model_params:
   name: 'CategoricalVAE'
   in_channels: 1
   latent_dim: 10
-  categorical_dim: 40
+  categorical_dim: 10
   temperature: 0.5
   anneal_rate: 0.00003
   anneal_interval: 100
   alpha: 1.0
 
 data_params:
-  data_path: "/home/evgenio/Activity/him-agent/hima/experiments/successor_representations/animal_ai_dataset/"
+  data_path: "/home/evgenio/Activity/HTM/htm_rl_tepo/hima_airi/him-agent/hima/experiments/successor_representations/animal_ai_dataset_boost/"
   train_batch_size: 64
   val_batch_size:  64
   patch_size: 64
   num_workers: 4
-
 
 exp_params:
   LR: 0.005
@@ -25,7 +24,7 @@ exp_params:
 
 trainer_params:
   gpus: [0]
-  max_epochs: 10
+  max_epochs: 20
 
 logging_params:
   save_dir: "logs/"

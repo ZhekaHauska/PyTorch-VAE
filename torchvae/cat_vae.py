@@ -22,7 +22,7 @@ class CategoricalVAE(BaseVAE):
 
         self.latent_dim = latent_dim
         self.categorical_dim = categorical_dim
-        self.temp = temperature
+        self.temp = 1.0
         self.min_temp = temperature
         self.anneal_rate = anneal_rate
         self.anneal_interval = anneal_interval
