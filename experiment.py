@@ -32,12 +32,14 @@ class VAEXperiment(pl.LightningModule):
         return self.model(input, **kwargs)
 
     def training_step(self, batch, batch_idx, optimizer_idx = 0):
-        real_img, labels = batch
+        real_img = batch[0]
+        labels = batch[1]
+        reset_flags = batch[2] if len(batch) > 2 else None
         self.curr_device = real_img.device
 
-        results = self.forward(real_img, labels=labels)
+        results = self.forward(real_img, labels=labels, reset_flags=reset_flags)
         train_loss = self.model.loss_function(*results,
-                                              M_N = self.params['kld_weight'], #al_img.shape[0]/ self.num_train_imgs,
+                                              M_N = self.params['kld_weight'],
                                               optimizer_idx=optimizer_idx,
                                               batch_idx = batch_idx)
 
@@ -46,12 +48,14 @@ class VAEXperiment(pl.LightningModule):
         return train_loss['loss']
 
     def validation_step(self, batch, batch_idx, optimizer_idx = 0):
-        real_img, labels = batch
+        real_img = batch[0]
+        labels = batch[1]
+        reset_flags = batch[2] if len(batch) > 2 else None
         self.curr_device = real_img.device
 
-        results = self.forward(real_img, labels = labels)
+        results = self.forward(real_img, labels = labels, reset_flags = reset_flags)
         val_loss = self.model.loss_function(*results,
-                                            M_N = 1.0, #real_img.shape[0]/ self.num_val_imgs,
+                                            M_N = 1.0,
                                             optimizer_idx = optimizer_idx,
                                             batch_idx = batch_idx)
 
@@ -62,10 +66,9 @@ class VAEXperiment(pl.LightningModule):
         self.sample_images()
         
     def sample_images(self):
-        # Get sample reconstruction image            
-        test_input, test_label = next(iter(self.trainer.datamodule.test_dataloader()))
-        test_input = test_input.to(self.curr_device)
-        test_label = test_label.to(self.curr_device)
+        test_batch = next(iter(self.trainer.datamodule.test_dataloader()))
+        test_input = test_batch[0].to(self.curr_device)
+        test_label = test_batch[1].to(self.curr_device)
 
 #         test_input, test_label = batch
         recons = self.model.generate(test_input, labels = test_label)

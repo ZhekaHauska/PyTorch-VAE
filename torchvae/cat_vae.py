@@ -11,13 +11,15 @@ class CategoricalVAE(BaseVAE):
     def __init__(self,
                  in_channels: int,
                  latent_dim: int,
-                 categorical_dim: int = 40, # Num classes
+                 categorical_dim: int = 40,
                  hidden_dims: List = None,
                  temperature: float = 0.5,
                  anneal_rate: float = 3e-5,
-                 anneal_interval: int = 100, # every 100 batches
+                 anneal_interval: int = 100,
                  alpha: float = 30.,
                  beta: float = 1.,
+                 trace_decay: float = 0.0,
+                 gamma: float = 1.0,
                  **kwargs) -> None:
         super(CategoricalVAE, self).__init__()
 
@@ -29,6 +31,8 @@ class CategoricalVAE(BaseVAE):
         self.anneal_interval = anneal_interval
         self.alpha = alpha
         self.beta = beta
+        self.trace_decay = trace_decay
+        self.gamma = gamma
 
         modules = []
         if hidden_dims is None:
@@ -86,6 +90,7 @@ class CategoricalVAE(BaseVAE):
         self.sampling_dist = torch.distributions.OneHotCategorical(
             1. / categorical_dim * torch.ones((self.categorical_dim, 1))
         )
+        self.register_buffer('latent_trace', None)
 
     def encode(self, input: Tensor) -> List[Tensor]:
         """
@@ -134,52 +139,66 @@ class CategoricalVAE(BaseVAE):
     def forward(self, input: Tensor, **kwargs) -> List[Tensor]:
         q = self.encode(input)[0]
         z = self.reparameterize(q)
-        return [self.decode(z), input, q, self.linear_decoder(z), kwargs.get('labels')]
+        return [self.decode(z), input, q, self.linear_decoder(z),
+                kwargs.get('labels'), z, kwargs.get('reset_flags')]
 
     def loss_function(self,
                       *args,
                       **kwargs) -> dict:
-        """
-        Computes the VAE loss function.
-        KL(N(\mu, \sigma), N(0, 1)) = \log \frac{1}{\sigma} + \frac{\sigma^2 + \mu^2}{2} - \frac{1}{2}
-        :param args:
-        :param kwargs:
-        :return:
-        """
         recons = args[0]
         input = args[1]
         q = args[2]
         pred_reward = args[3]
         real_reward = args[4]
+        z = args[5]
+        reset_flags = args[6]
 
-        q_p = F.softmax(q, dim=-1) # Convert the categorical codes into probabilities
+        q_p = F.softmax(q, dim=-1)
 
-        kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
+        kld_weight = kwargs['M_N']
         batch_idx = kwargs['batch_idx']
 
-        # Anneal the temperature at regular intervals
         if batch_idx % self.anneal_interval == 0 and self.training:
             self.temp = np.maximum(self.temp * np.exp(-self.anneal_rate * batch_idx),
                                    self.min_temp)
 
         recons_loss = F.mse_loss(recons, input, reduction='mean')
 
-        # KL divergence between gumbel-softmax distribution
         eps = 1e-7
-
-        # Entropy of the logits
         h1 = q_p * torch.log(q_p + eps)
-
-        # Cross entropy with the categorical distribution
         h2 = q_p * np.log(1. / self.categorical_dim + eps)
         kld_loss = torch.mean(torch.sum(h1 - h2, dim=(1, 2)), dim=0)
 
-        # reward regularization
         rew_loss = F.mse_loss(pred_reward, real_reward, reduction='mean')
 
-        # kld_weight = 1.2
-        loss = self.alpha * recons_loss + kld_weight * kld_loss + self.beta * rew_loss
-        return {'loss': loss, 'Reconstruction_Loss': recons_loss, 'KLD': -kld_loss, 'reward_loss': rew_loss}
+        trace_loss = recons_loss.new_tensor(0.0)
+
+        if self.trace_decay > 0 and self.training and z is not None:
+            if reset_flags is None:
+                reset_flags = torch.zeros(z.shape[0], device=z.device)
+
+            if self.latent_trace is None or self.latent_trace.shape[0] != z.shape[0]:
+                self.register_buffer('latent_trace',
+                    torch.zeros(z.shape[0], self.latent_dim * self.categorical_dim,
+                                device=z.device))
+
+            trace_target = self.latent_trace.detach().clone()
+            trace_loss = F.mse_loss(z, trace_target)
+
+            with torch.no_grad():
+                reset_mask = (reset_flags > 0).unsqueeze(1)
+                z_detached = z.detach()
+                new_trace = torch.where(
+                    reset_mask,
+                    z_detached,
+                    self.trace_decay * self.latent_trace + (1 - self.trace_decay) * z_detached
+                )
+                self.latent_trace.copy_(new_trace)
+
+        loss = self.alpha * recons_loss + kld_weight * kld_loss \
+            + self.beta * rew_loss + self.gamma * trace_loss
+        return {'loss': loss, 'Reconstruction_Loss': recons_loss,
+                'KLD': -kld_loss, 'reward_loss': rew_loss, 'Trace_Loss': trace_loss}
 
     def sample(self,
                num_samples: int,
